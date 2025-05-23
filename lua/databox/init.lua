@@ -1,171 +1,517 @@
--- databox.lua — Neovim plugin for deeply encrypted persistent dictionary
+-- databox.nvim - Neovim plugin for deeply encrypted persistent dictionary
 
+---@class DataboxConfig
+---@field private_key string Path to the private key file (required)
+---@field public_key string Public key string or path to public key file (required)
+---@field store_path? string Custom storage path (optional)
+---@field encryption_cmd? string Encryption command template (optional, default: "age")
+---@field decryption_cmd? string Decryption command template (optional, default: "age")
+
+---@class Databox
 local M = {}
 
--- Configuration variables
-local private_key_file = nil
-local public_key = nil
-local store_path = nil
+-- Internal state
+---@type DataboxConfig|nil
+local config = nil
+---@type string|nil
+local resolved_store_path = nil
+---@type table
 local data = {}
 
--- Utility: Determine the storage path
+-- Default configuration
+---@type DataboxConfig
+local default_config = {
+	private_key = "",
+	public_key = "",
+	store_path = nil,
+	encryption_cmd = "age -e -r %s",
+	decryption_cmd = "age -d -i %s",
+}
+
+---Safely escape shell arguments
+---@param arg string
+---@return string
+local function shell_escape(arg)
+	return "'" .. arg:gsub("'", "'\"'\"'") .. "'"
+end
+
+---Generate a secure temporary file path
+---@return string|nil, string?
+local function secure_tmpfile()
+	local handle = io.popen("mktemp 2>/dev/null", "r")
+	if not handle then
+		return nil, "Failed to create secure temporary file"
+	end
+	local tmpfile = handle:read("*l")
+	handle:close()
+
+	if not tmpfile or tmpfile == "" then
+		return nil, "Failed to get temporary file path"
+	end
+
+	return tmpfile
+end
+
+---Clean up temporary file
+---@param filepath string
+local function cleanup_tmpfile(filepath)
+	if filepath and filepath ~= "" then
+		os.remove(filepath)
+	end
+end
+
+---Determine the storage path
+---@return string
 local function resolve_store_path()
+	if config and config.store_path then
+		return config.store_path
+	end
+
 	local xdg = os.getenv("XDG_DATA_HOME") or (os.getenv("HOME") .. "/.local/share")
 	return xdg .. "/nvim/databox.txt"
 end
 
--- Utility: Run a command with input/output
-local function run_pipe(cmd, mode, input)
-	local handle = io.popen(cmd, mode)
-	if not handle then
-		return nil, "Failed to open pipe"
-	end
-	if mode == "w" then
-		if input then
-			handle:write(input)
+---Run a command safely with proper error handling
+---@param cmd string
+---@param input? string
+---@return string|nil, string?
+local function run_command(cmd, input)
+	local tmpfile_in, err
+
+	if input then
+		tmpfile_in, err = secure_tmpfile()
+		if not tmpfile_in then
+			return nil, err or "Failed to create input temporary file"
 		end
-		handle:close()
-		return true
-	elseif mode == "r" then
-		local output = handle:read("*a")
-		handle:close()
-		return output
+
+		local file = io.open(tmpfile_in, "w")
+		if not file then
+			cleanup_tmpfile(tmpfile_in)
+			return nil, "Failed to write to temporary file"
+		end
+
+		file:write(input)
+		file:close()
+
+		cmd = cmd .. " " .. shell_escape(tmpfile_in)
+	end
+
+	local handle = io.popen(cmd .. " 2>&1", "r")
+	if not handle then
+		cleanup_tmpfile(tmpfile_in)
+		return nil, "Failed to execute command"
+	end
+
+	local output = handle:read("*a")
+	local success = handle:close()
+	cleanup_tmpfile(tmpfile_in)
+
+	if not success then
+		return nil, "Command failed: " .. (output or "unknown error")
+	end
+
+	return output
+end
+
+---Check if a value can be safely serialized
+---@param obj any
+---@return boolean, string?
+local function is_serializable(obj)
+	local obj_type = type(obj)
+
+	if obj_type == "function" or obj_type == "userdata" or obj_type == "thread" then
+		return false, "Cannot serialize " .. obj_type .. " values"
+	end
+
+	if obj_type == "table" then
+		for k, v in pairs(obj) do
+			local k_ok, k_err = is_serializable(k)
+			if not k_ok then
+				return false, "Key error: " .. (k_err or "unknown")
+			end
+
+			local v_ok, v_err = is_serializable(v)
+			if not v_ok then
+				return false, "Value error: " .. (v_err or "unknown")
+			end
+		end
+	end
+
+	return true
+end
+
+---Encode special values for JSON serialization
+---@param obj any
+---@return any
+local function encode_special_values(obj)
+	if obj == nil then
+		return { __databox_type = "nil" }
+	elseif type(obj) == "table" then
+		local result = {}
+		local is_empty = true
+
+		for k, v in pairs(obj) do
+			result[k] = encode_special_values(v)
+			is_empty = false
+		end
+
+		-- Mark empty tables specially
+		if is_empty then
+			return { __databox_type = "empty_table" }
+		end
+
+		return result
+	else
+		return obj
 	end
 end
 
--- Recursively encrypt all strings in a table
-local function deep_encrypt(obj)
-	if type(obj) == "table" then
+---Decode special values from JSON
+---@param obj any
+---@return any
+local function decode_special_values(obj)
+	if type(obj) == "table" and obj.__databox_type then
+		if obj.__databox_type == "nil" then
+			return nil
+		elseif obj.__databox_type == "empty_table" then
+			return {}
+		end
+	elseif type(obj) == "table" then
 		local result = {}
 		for k, v in pairs(obj) do
-			local ek = deep_encrypt(k)
-			local ev = deep_encrypt(v)
-			if ek and ev then
+			result[k] = decode_special_values(v)
+		end
+		return result
+	end
+
+	return obj
+end
+
+---Recursively encrypt all strings in a table
+---@param obj any
+---@return any, string?
+local function deep_encrypt(obj)
+	-- First encode special values (nil, empty tables)
+	local encoded = encode_special_values(obj)
+
+	if type(encoded) == "table" then
+		local result = {}
+		for k, v in pairs(encoded) do
+			local ek, ek_err = deep_encrypt(k)
+			if ek == nil and ek_err then
+				return nil, "Failed to encrypt key: " .. ek_err
+			end
+
+			local ev, ev_err = deep_encrypt(v)
+			if ev == nil and ev_err then
+				return nil, "Failed to encrypt value: " .. ev_err
+			end
+
+			if ek ~= nil then
 				result[ek] = ev
 			end
 		end
 		return result
-	elseif type(obj) == "string" then
-		local tmp_in = os.tmpname()
-		local fout = io.open(tmp_in, "w")
-		if not fout then
-			return nil
+	elseif type(encoded) == "string" then
+		if not config then
+			return nil, "Plugin not initialized"
 		end
-		fout:write(obj)
-		fout:close()
-		local cmd = string.format("age -e -r %q %q", public_key, tmp_in)
-		local out = run_pipe(cmd, "r")
-		os.remove(tmp_in)
-		return out and out:gsub("\n", "\\n") or nil
+
+		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+		local encrypted, err = run_command(cmd, encoded)
+
+		if not encrypted then
+			return nil, err or "Encryption failed"
+		end
+
+		-- Replace newlines with escaped version for JSON storage
+		return encrypted:gsub("\n", "\\n")
 	else
-		return obj
+		return encoded
 	end
 end
 
--- Recursively decrypt all strings in a table
+---Recursively decrypt all strings in a table
+---@param obj any
+---@return any, string?
 local function deep_decrypt(obj)
 	if type(obj) == "table" then
 		local result = {}
 		for k, v in pairs(obj) do
-			local dk = deep_decrypt(k)
-			local dv = deep_decrypt(v)
-			if dk and dv then
+			local dk, dk_err = deep_decrypt(k)
+			if dk == nil and dk_err then
+				return nil, "Failed to decrypt key: " .. dk_err
+			end
+
+			local dv, dv_err = deep_decrypt(v)
+			if dv == nil and dv_err then
+				return nil, "Failed to decrypt value: " .. dv_err
+			end
+
+			if dk ~= nil then
 				result[dk] = dv
 			end
 		end
-		return result
+
+		-- Decode special values after decryption
+		return decode_special_values(result)
 	elseif type(obj) == "string" then
-		local tmp_in = os.tmpname()
-		local fout = io.open(tmp_in, "w")
-		if not fout then
-			return nil
+		if not config then
+			return nil, "Plugin not initialized"
 		end
-		fout:write(obj:gsub("\\n", "\n"))
-		fout:close()
-		local cmd = string.format("age -d -i %q %q", private_key_file, tmp_in)
-		local decrypted = run_pipe(cmd, "r")
-		os.remove(tmp_in)
-		return decrypted and decrypted:gsub("\n$", "") or nil
+
+		-- Restore newlines from escaped version
+		local encrypted_content = obj:gsub("\\n", "\n")
+		local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
+		local decrypted, err = run_command(cmd, encrypted_content)
+
+		if not decrypted then
+			return nil, err or "Decryption failed"
+		end
+
+		-- Remove trailing newline that age might add
+		return decrypted:gsub("\n$", "")
 	else
 		return obj
 	end
 end
 
--- Public API: Initialize the plugin
+---Initialize the plugin with configuration
+---@param opts? DataboxConfig User configuration
+---@return boolean success
+---@return string? error
 function M.setup(opts)
-	assert(opts and opts.private_key, "Missing private_key in setup")
-	assert(opts and opts.public_key, "Missing public_key in setup")
-	private_key_file = opts.private_key
-	public_key = opts.public_key
-	store_path = resolve_store_path()
-	M.load()
+	opts = opts or {}
+
+	-- Merge with defaults
+	config = vim.tbl_deep_extend("force", default_config, opts)
+
+	-- Validate required fields
+	if not config.private_key or config.private_key == "" then
+		return false, "Missing required field: private_key"
+	end
+
+	if not config.public_key or config.public_key == "" then
+		return false, "Missing required field: public_key"
+	end
+
+	-- Expand tilde in paths
+	config.private_key = vim.fn.expand(config.private_key)
+	if config.store_path then
+		config.store_path = vim.fn.expand(config.store_path)
+	end
+
+	resolved_store_path = resolve_store_path()
+
+	-- Ensure storage directory exists
+	local store_dir = vim.fn.fnamemodify(resolved_store_path, ":h")
+	if vim.fn.isdirectory(store_dir) == 0 then
+		vim.fn.mkdir(store_dir, "p")
+	end
+
+	local success, err = M.load()
+	if not success then
+		return false, "Failed to load existing data: " .. (err or "unknown error")
+	end
+
+	return true
 end
 
--- Public API: Save encrypted dictionary to disk
+---Save encrypted dictionary to disk
+---@return boolean success
+---@return string? error
 function M.save()
-	local enc = deep_encrypt(data)
-	if not enc then
-		return
+	if not config then
+		return false, "Plugin not initialized. Call setup() first"
 	end
+
+	local enc, enc_err = deep_encrypt(data)
+	if enc == nil and enc_err then
+		return false, "Encryption failed: " .. enc_err
+	end
+
+	-- Handle case where data is empty
+	if enc == nil then
+		enc = {}
+	end
+
 	local ok, json = pcall(vim.fn.json_encode, enc)
 	if not ok then
-		return
+		return false, "JSON encoding failed: " .. tostring(json)
 	end
-	local f = io.open(store_path, "w")
-	if not f then
-		return
+
+	local file, file_err = io.open(resolved_store_path, "w")
+	if not file then
+		return false, "Failed to open storage file: " .. (file_err or "unknown error")
 	end
-	f:write(json)
-	f:close()
+
+	file:write(json)
+	file:close()
+
+	return true
 end
 
--- Public API: Load and decrypt dictionary from disk
+---Load and decrypt dictionary from disk
+---@return boolean success
+---@return string? error
 function M.load()
-	local f = io.open(store_path, "r")
-	if not f then
-		data = {}
-		return
+	if not config then
+		return false, "Plugin not initialized. Call setup() first"
 	end
-	local json = f:read("*a")
-	f:close()
+
+	local file = io.open(resolved_store_path, "r")
+	if not file then
+		-- File doesn't exist yet, start with empty data
+		data = {}
+		return true
+	end
+
+	local json = file:read("*a")
+	file:close()
+
+	if not json or json == "" then
+		data = {}
+		return true
+	end
+
 	local ok, parsed = pcall(vim.fn.json_decode, json)
-	if ok and type(parsed) == "table" then
-		data = deep_decrypt(parsed)
-	else
-		data = {}
+	if not ok then
+		return false, "Failed to parse stored data: " .. tostring(parsed)
 	end
+
+	if type(parsed) ~= "table" then
+		data = {}
+		return true
+	end
+
+	local decrypted, dec_err = deep_decrypt(parsed)
+	if decrypted == nil and dec_err then
+		return false, "Decryption failed: " .. dec_err
+	end
+
+	data = decrypted or {}
+	return true
 end
 
--- Public API: Check if a key exists
+---Check if a key exists
+---@param key string
+---@return boolean
 function M.exists(key)
-	return type(key) == "string" and data[key] ~= nil
+	assert(type(key) == "string", "Key must be a string")
+	return data[key] ~= nil
 end
 
--- Public API: Set a new key
+---Set a new key (fails if key already exists)
+---@param key string
+---@param value any
+---@param save? boolean Whether to save immediately (default: true)
+---@return boolean success
+---@return string? error
 function M.set(key, value, save)
 	assert(type(key) == "string", "Key must be a string")
+
 	if data[key] ~= nil then
-		error("Key already exists: " .. key)
+		return false, "Key already exists: " .. key
 	end
+
+	local serializable, ser_err = is_serializable(value)
+	if not serializable then
+		return false, ser_err or "Value is not serializable"
+	end
+
 	data[key] = value
+
 	if save == nil or save then
-		M.save()
+		return M.save()
 	end
+
+	return true
 end
 
--- Public API: Update existing key
+---Update existing key (fails if key doesn't exist)
+---@param key string
+---@param value any
+---@param save? boolean Whether to save immediately (default: true)
+---@return boolean success
+---@return string? error
 function M.update(key, value, save)
 	assert(type(key) == "string", "Key must be a string")
-	data[key] = value
-	if save == nil or save then
-		M.save()
+
+	if not M.exists(key) then
+		return false, "Key does not exist: " .. key .. ". Use set() to create new keys"
 	end
+
+	local serializable, ser_err = is_serializable(value)
+	if not serializable then
+		return false, ser_err or "Value is not serializable"
+	end
+
+	data[key] = value
+
+	if save == nil or save then
+		return M.save()
+	end
+
+	return true
 end
 
--- Public API: Retrieve value for a key
+---Remove a key
+---@param key string
+---@param save? boolean Whether to save immediately (default: true)
+---@return boolean success
+---@return string? error
+function M.remove(key, save)
+	assert(type(key) == "string", "Key must be a string")
+
+	if not M.exists(key) then
+		return false, "Key does not exist: " .. key
+	end
+
+	data[key] = nil
+
+	if save == nil or save then
+		return M.save()
+	end
+
+	return true
+end
+
+---Retrieve value for a key
+---@param key string
+---@return any|nil value
+---@return string? error
 function M.get(key)
 	assert(type(key) == "string", "Key must be a string")
+
+	if not M.exists(key) then
+		return nil, "Key does not exist: " .. key
+	end
+
 	return data[key]
+end
+
+---Get all keys
+---@return string[]
+function M.keys()
+	local result = {}
+	for k, _ in pairs(data) do
+		table.insert(result, k)
+	end
+	return result
+end
+
+---Clear all data
+---@param save? boolean Whether to save immediately (default: true)
+---@return boolean success
+---@return string? error
+function M.clear(save)
+	data = {}
+
+	if save == nil or save then
+		return M.save()
+	end
+
+	return true
 end
 
 return M
