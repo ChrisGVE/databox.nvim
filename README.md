@@ -1,5 +1,9 @@
 # 📦 databox.nvim
 
+<a href="https://dotfyle.com/plugins/chrisgve/databox.nvim">
+  <img src="https://dotfyle.com/plugins/chrisgve/databox.nvim/shield" />
+</a>
+
 **databox.nvim** is a robust and secure Neovim plugin that provides encrypted storage for Lua tables (dictionaries), using [`age`](https://age-encryption.org) or compatible encryption tools for cryptographic safety. Data is stored deeply encrypted, meaning every string — including nested keys and values — is protected.
 
 - 🔐 Built on [age](https://github.com/FiloSottile/age) (or compatible tools like [rage](https://github.com/str4d/rage))
@@ -51,7 +55,7 @@
       -- encryption_cmd = "rage -e -r %s",
       -- decryption_cmd = "rage -d -i %s",
     })
-    
+
     if not success then
       vim.notify("Databox setup failed: " .. err, vim.log.levels.ERROR)
     end
@@ -72,7 +76,7 @@ use {
       private_key = "~/.config/age/keys.txt",
       public_key = "age1example...",
     })
-    
+
     if not success then
       print("Databox setup failed: " .. err)
     end
@@ -117,6 +121,7 @@ The public key (starting with `age1...`) is what you'll use in your configuratio
 ### Configuration Examples
 
 #### Standard age setup:
+
 ```lua
 require("databox").setup({
   private_key = "~/.config/age/keys.txt",
@@ -125,6 +130,7 @@ require("databox").setup({
 ```
 
 #### Using rage for better performance:
+
 ```lua
 require("databox").setup({
   private_key = "~/.config/age/keys.txt",
@@ -135,6 +141,7 @@ require("databox").setup({
 ```
 
 #### Custom storage location:
+
 ```lua
 require("databox").setup({
   private_key = "~/.config/age/keys.txt",
@@ -144,6 +151,7 @@ require("databox").setup({
 ```
 
 #### Advanced custom encryption tool:
+
 ```lua
 require("databox").setup({
   private_key = "~/.config/mycrypt/key.pem",
@@ -168,12 +176,12 @@ local db = require("databox")
 local success, err = db.setup({ ... })
 
 -- Set a new key (fails if key exists)
-local ok, err = db.set("project1", { 
+local ok, err = db.set("project1", {
   token = "secret123",           -- String: encrypted
   max_requests = 1000,           -- Number: encrypted (protects limits/quotas)
   debug_enabled = true,          -- Boolean: encrypted (protects config flags)
-  config = { 
-    lang = "lua", 
+  config = {
+    lang = "lua",
     timeout = 30,                -- Nested number: encrypted
     features = {},               -- Empty table: encrypted and preserved
     disabled_feature = nil       -- nil value: encrypted and preserved
@@ -242,6 +250,7 @@ $HOME/.local/share/nvim/databox.txt
 ## 🔐 Security Features
 
 ### Deep Encryption with Complete Data Security
+
 - **Individual encryption**: Each sensitive value is encrypted separately, preventing correlation attacks
 - **Complete data protection**: ALL sensitive data types are encrypted:
   - Strings: `"secret"` → encrypted
@@ -254,13 +263,15 @@ $HOME/.local/share/nvim/databox.txt
 - **Structure preservation**: Table structures and nesting are maintained exactly
 
 ### Secure Temporary Files
+
 - **Cryptographically secure**: Uses `mktemp` for unpredictable temporary file names
 - **Automatic cleanup**: Guaranteed cleanup of temporary files, even on failure
 - **No predictable paths**: Eliminates risk of temp file prediction attacks
 
 ### Input Validation & Error Handling
+
 - **Shell injection prevention**: All arguments are properly escaped
-- **Serialization validation**: Checks data types before attempting encryption  
+- **Serialization validation**: Checks data types before attempting encryption
 - **Comprehensive errors**: Clear, actionable error messages for all failure modes
 - **Graceful degradation**: Partial failures don't corrupt existing data
 
@@ -269,17 +280,21 @@ $HOME/.local/share/nvim/databox.txt
 ## ⚡ Performance & Efficiency
 
 ### Smart Processing Architecture
+
 - **Single-pass encoding**: Special values (nil, empty tables) are encoded during encryption traversal
 - **Eliminated redundancy**: No separate filtering passes - everything happens in one efficient traversal
 - **Reliable I/O**: Better temporary file handling reduces I/O failure rates
 
 ### Security-Performance Balance
+
 The plugin uses **per-string encryption** by design - this isn't inefficient, it's a security feature:
+
 - **Prevents correlation attacks**: Attackers can't correlate similar encrypted values
 - **Isolated failures**: Corruption in one value doesn't affect others
 - **Individual integrity**: Each string has its own encryption envelope
 
 ### Encryption Tool Flexibility
+
 - **age**: Standard Go implementation, widely compatible
 - **rage**: Rust implementation, often 2-3x faster than age
 - **Custom tools**: Support any age-compatible encryption utility
@@ -324,10 +339,12 @@ end
 ### Common Issues
 
 **"Plugin not initialized"**
+
 - Ensure `setup()` is called before using any other functions
 - Check that both `private_key` and `public_key` are provided
 
 **"Command failed" or encryption/decryption errors**
+
 - Verify your encryption utility (age/rage) is installed and in your PATH
 - Check that your key files exist and are readable
 - Ensure your public key matches your private key
@@ -335,10 +352,12 @@ end
 - If using custom commands, ensure they produce ASCII-safe output for JSON compatibility
 
 **"Failed to create secure temporary file"**
+
 - Verify `mktemp` command is available
 - Check that `/tmp` directory is writable
 
 **Performance issues**
+
 - Consider switching from `age` to `rage` for 2-3x performance improvement
 - Use `save = false` for batch operations to reduce I/O
 
@@ -376,13 +395,14 @@ time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_priva
 
 ## 📚 Encryption Tool Comparison
 
-| Tool | Language | Performance | Compatibility | Installation |
-|------|----------|-------------|---------------|--------------|
-| **age** | Go | Standard | Universal | `brew install age` / package managers |
-| **rage** | Rust | 2-3x faster | age-compatible | `cargo install rage` / releases |
-| **Custom** | Any | Varies | Must be age-compatible | Your choice |
+| Tool       | Language | Performance | Compatibility          | Installation                          |
+| ---------- | -------- | ----------- | ---------------------- | ------------------------------------- |
+| **age**    | Go       | Standard    | Universal              | `brew install age` / package managers |
+| **rage**   | Rust     | 2-3x faster | age-compatible         | `cargo install rage` / releases       |
+| **Custom** | Any      | Varies      | Must be age-compatible | Your choice                           |
 
 ### Recommendations:
+
 - **For maximum compatibility**: Use `age` (default)
 - **For best performance**: Use `rage` with custom commands
 - **For specialized needs**: Implement age-compatible custom encryption
@@ -392,6 +412,7 @@ time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_priva
 ## 📋 Changelog
 
 ### v1.2.0 - Complete Data Security
+
 - **BREAKING**: Now encrypts ALL sensitive data types, not just strings
 - **Enhanced security**: Numbers, booleans, nil values, and empty tables are now encrypted
 - **Perfect type preservation**: All original data types are restored exactly after decryption
@@ -399,6 +420,7 @@ time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_priva
 - **Migration**: Existing data will need to be re-encrypted with the new comprehensive format
 
 ### v1.1.0 - UTF-8 Safety Update
+
 - **BREAKING**: Default encryption now uses ASCII armor (`-a` flag) for UTF-8 safe JSON storage
 - **Fixed**: "String contains byte that does not start any UTF-8 character" errors
 - **Improved**: Better compatibility with complex data structures containing varied content
