@@ -169,10 +169,15 @@ local success, err = db.setup({ ... })
 
 -- Set a new key (fails if key exists)
 local ok, err = db.set("project1", { 
-  token = "secret123", 
-  config = { lang = "lua", debug = true },
-  empty_settings = {},  -- Empty tables are preserved
-  disabled_feature = nil, -- nil values are preserved
+  token = "secret123",           -- String: encrypted
+  max_requests = 1000,           -- Number: encrypted (protects limits/quotas)
+  debug_enabled = true,          -- Boolean: encrypted (protects config flags)
+  config = { 
+    lang = "lua", 
+    timeout = 30,                -- Nested number: encrypted
+    features = {},               -- Empty table: encrypted and preserved
+    disabled_feature = nil       -- nil value: encrypted and preserved
+  }
 })
 
 -- Update existing key (fails if key doesn't exist)
@@ -236,12 +241,17 @@ $HOME/.local/share/nvim/databox.txt
 
 ## 🔐 Security Features
 
-### Deep Encryption with Per-String Security
-- **Individual encryption**: Each string is encrypted separately, preventing correlation attacks
+### Deep Encryption with Complete Data Security
+- **Individual encryption**: Each sensitive value is encrypted separately, preventing correlation attacks
+- **Complete data protection**: ALL sensitive data types are encrypted:
+  - Strings: `"secret"` → encrypted
+  - Numbers: `42` → encrypted (protects IDs, seeds, limits, etc.)
+  - Booleans: `true` → encrypted (protects configuration flags)
+  - nil values: `nil` → encrypted (preserves intentional nil values)
+  - Empty tables: `{}` → encrypted (preserves empty structures)
 - **ASCII armor encoding**: Uses age's `-a` flag to produce UTF-8 safe encrypted output for JSON storage
-- **Secure containers**: Dictionary keys, string values, and nested strings all get individual encryption
-- **Data integrity**: Non-string types (numbers, booleans) are preserved as-is
-- **Complete preservation**: Empty tables `{}` and `nil` values are maintained exactly
+- **Type preservation**: Original data types are perfectly restored after decryption
+- **Structure preservation**: Table structures and nesting are maintained exactly
 
 ### Secure Temporary Files
 - **Cryptographically secure**: Uses `mktemp` for unpredictable temporary file names
@@ -380,6 +390,13 @@ time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_priva
 ---
 
 ## 📋 Changelog
+
+### v1.2.0 - Complete Data Security
+- **BREAKING**: Now encrypts ALL sensitive data types, not just strings
+- **Enhanced security**: Numbers, booleans, nil values, and empty tables are now encrypted
+- **Perfect type preservation**: All original data types are restored exactly after decryption
+- **Use cases**: Protects API limits, seeds, configuration flags, IDs, and any numeric secrets
+- **Migration**: Existing data will need to be re-encrypted with the new comprehensive format
 
 ### v1.1.0 - UTF-8 Safety Update
 - **BREAKING**: Default encryption now uses ASCII armor (`-a` flag) for UTF-8 safe JSON storage

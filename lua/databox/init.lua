@@ -113,6 +113,14 @@ local function run_command(cmd, input)
 	return output
 end
 
+-- Type markers for encrypting non-string sensitive data
+local TYPE_MARKERS = {
+	NUMBER = "__DATABOX_INTERNAL_NUMBER_MARKER__:",
+	BOOLEAN = "__DATABOX_INTERNAL_BOOLEAN_MARKER__:",
+	NIL = "__DATABOX_INTERNAL_NIL_MARKER__:",
+	EMPTY_TABLE = "__DATABOX_INTERNAL_EMPTY_TABLE_MARKER__:"
+}
+
 ---Check if a value can be safely serialized
 ---@param obj any
 ---@return boolean, string?
@@ -140,98 +148,118 @@ local function is_serializable(obj)
 	return true
 end
 
----Encode special values for JSON serialization
+---Recursively encrypt all sensitive data in a table
 ---@param obj any
----@return any
-local function encode_special_values(obj)
-	if obj == nil then
-		return { __databox_type = "nil" }
-	elseif type(obj) == "table" then
-		local result = {}
+---@return any, string?
+local function deep_encrypt(obj)
+	if type(obj) == "table" then
+		-- Check if it's an empty table
 		local is_empty = true
-
-		for k, v in pairs(obj) do
-			result[k] = encode_special_values(v)
+		for _, _ in pairs(obj) do
 			is_empty = false
+			break
 		end
-
-		-- Mark empty tables specially
+		
 		if is_empty then
-			return { __databox_type = "empty_table" }
+			-- Encrypt empty table marker
+			if not config then
+				return nil, "Plugin not initialized"
+			end
+			
+			local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+			local encrypted, err = run_command(cmd, TYPE_MARKERS.EMPTY_TABLE)
+			
+			if not encrypted then
+				return nil, err or "Encryption failed"
+			end
+			
+			return encrypted
+		else
+			-- Encrypt each key-value pair
+			local result = {}
+			for k, v in pairs(obj) do
+				local ek, ek_err = deep_encrypt(k)
+				if ek == nil and ek_err then
+					return nil, "Failed to encrypt key: " .. ek_err
+				end
+				
+				local ev, ev_err = deep_encrypt(v)
+				if ev == nil and ev_err then
+					return nil, "Failed to encrypt value: " .. ev_err
+				end
+				
+				if ek ~= nil then
+					result[ek] = ev
+				end
+			end
+			return result
 		end
-
-		return result
+		
+	elseif type(obj) == "string" then
+		if not config then
+			return nil, "Plugin not initialized"
+		end
+		
+		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+		local encrypted, err = run_command(cmd, obj)
+		
+		if not encrypted then
+			return nil, err or "Encryption failed"
+		end
+		
+		return encrypted
+		
+	elseif type(obj) == "number" then
+		if not config then
+			return nil, "Plugin not initialized"
+		end
+		
+		local marked_value = TYPE_MARKERS.NUMBER .. tostring(obj)
+		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+		local encrypted, err = run_command(cmd, marked_value)
+		
+		if not encrypted then
+			return nil, err or "Encryption failed"
+		end
+		
+		return encrypted
+		
+	elseif type(obj) == "boolean" then
+		if not config then
+			return nil, "Plugin not initialized"
+		end
+		
+		local marked_value = TYPE_MARKERS.BOOLEAN .. tostring(obj)
+		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+		local encrypted, err = run_command(cmd, marked_value)
+		
+		if not encrypted then
+			return nil, err or "Encryption failed"
+		end
+		
+		return encrypted
+		
+	elseif obj == nil then
+		if not config then
+			return nil, "Plugin not initialized"
+		end
+		
+		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
+		local encrypted, err = run_command(cmd, TYPE_MARKERS.NIL)
+		
+		if not encrypted then
+			return nil, err or "Encryption failed"
+		end
+		
+		return encrypted
+		
 	else
+		-- For any other type, return as-is (shouldn't happen with proper validation)
 		return obj
 	end
 end
 
----Decode special values from JSON
----@param obj any
----@return any
-local function decode_special_values(obj)
-	if type(obj) == "table" and obj.__databox_type then
-		if obj.__databox_type == "nil" then
-			return nil
-		elseif obj.__databox_type == "empty_table" then
-			return {}
-		end
-	elseif type(obj) == "table" then
-		local result = {}
-		for k, v in pairs(obj) do
-			result[k] = decode_special_values(v)
-		end
-		return result
-	end
-
-	return obj
-end
-
----Recursively encrypt all strings in a table
----@param obj any
----@return any, string?
-local function deep_encrypt(obj)
-	-- First encode special values (nil, empty tables)
-	local encoded = encode_special_values(obj)
-
-	if type(encoded) == "table" then
-		local result = {}
-		for k, v in pairs(encoded) do
-			local ek, ek_err = deep_encrypt(k)
-			if ek == nil and ek_err then
-				return nil, "Failed to encrypt key: " .. ek_err
-			end
-
-			local ev, ev_err = deep_encrypt(v)
-			if ev == nil and ev_err then
-				return nil, "Failed to encrypt value: " .. ev_err
-			end
-
-			if ek ~= nil then
-				result[ek] = ev
-			end
-		end
-		return result
-	elseif type(encoded) == "string" then
-		if not config then
-			return nil, "Plugin not initialized"
-		end
-
-		local cmd = string.format(config.encryption_cmd, shell_escape(config.public_key))
-		local encrypted, err = run_command(cmd, encoded)
-
-		if not encrypted then
-			return nil, err or "Encryption failed"
-		end
-
-		-- Store encrypted content directly (ASCII armor is already safe for JSON)
-		return encrypted
-	else
-		return encoded
-	end
-end
-
----Recursively decrypt all strings in a table
+---Recursively decrypt all encrypted data in a table
 ---@param obj any
 ---@return any, string?
 local function deep_decrypt(obj)
@@ -253,8 +281,8 @@ local function deep_decrypt(obj)
 			end
 		end
 
-		-- Decode special values after decryption
-		return decode_special_values(result)
+		return result
+		
 	elseif type(obj) == "string" then
 		if not config then
 			return nil, "Plugin not initialized"
@@ -269,7 +297,28 @@ local function deep_decrypt(obj)
 		end
 
 		-- Remove trailing newline that age might add
-		return decrypted:gsub("\n$", "")
+		decrypted = decrypted:gsub("\n$", "")
+		
+		-- Check if this is a type-marked value and parse accordingly
+		if decrypted:sub(1, #TYPE_MARKERS.NUMBER) == TYPE_MARKERS.NUMBER then
+			local num_str = decrypted:sub(#TYPE_MARKERS.NUMBER + 1)
+			return tonumber(num_str)
+			
+		elseif decrypted:sub(1, #TYPE_MARKERS.BOOLEAN) == TYPE_MARKERS.BOOLEAN then
+			local bool_str = decrypted:sub(#TYPE_MARKERS.BOOLEAN + 1)
+			return bool_str == "true"
+			
+		elseif decrypted == TYPE_MARKERS.NIL then
+			return nil
+			
+		elseif decrypted == TYPE_MARKERS.EMPTY_TABLE then
+			return {}
+			
+		else
+			-- Regular string
+			return decrypted
+		end
+		
 	else
 		return obj
 	end
