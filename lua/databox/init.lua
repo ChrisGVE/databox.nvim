@@ -260,22 +260,16 @@ local function deep_decrypt(obj)
 			return nil, "Plugin not initialized"
 		end
 
-		-- Check if this string is an encrypted ASCII armor block
-		if obj:match("^%-%-%-%-%-BEGIN AGE ENCRYPTED FILE%-%-%-%-%-") then
-			-- ASCII armor format - decrypt it
-			local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
-			local decrypted, err = run_command(cmd, obj)
+		-- All strings in the encrypted data should be decrypted
+		local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
+		local decrypted, err = run_command(cmd, obj)
 
-			if not decrypted then
-				return nil, err or "Decryption failed"
-			end
-
-			-- Remove trailing newline that age might add
-			return decrypted:gsub("\n$", "")
-		else
-			-- Regular string - return as-is
-			return obj
+		if not decrypted then
+			return nil, err or "Decryption failed"
 		end
+
+		-- Remove trailing newline that age might add
+		return decrypted:gsub("\n$", "")
 	else
 		return obj
 	end
@@ -517,6 +511,12 @@ function M.clear(save)
 	end
 
 	return true
+end
+
+---Debug function to inspect raw internal data (for troubleshooting)
+---@return table
+function M._debug_get_raw_data()
+	return data
 end
 
 return M
