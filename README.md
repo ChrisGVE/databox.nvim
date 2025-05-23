@@ -111,7 +111,7 @@ The public key (starting with `age1...`) is what you'll use in your configuratio
 ### Optional Options
 
 - `store_path` (string): Custom storage path (defaults to XDG_DATA_HOME or ~/.local/share/nvim/databox.txt)
-- `encryption_cmd` (string): Command template for encryption (default: `"age -e -r %s"`)
+- `encryption_cmd` (string): Command template for encryption (default: `"age -e -a -r %s"` - note the `-a` flag for ASCII armor)
 - `decryption_cmd` (string): Command template for decryption (default: `"age -d -i %s"`)
 
 ### Configuration Examples
@@ -129,7 +129,7 @@ require("databox").setup({
 require("databox").setup({
   private_key = "~/.config/age/keys.txt",
   public_key = "age1abc123def456ghi789jkl012mno345pqr678stu901vwx234yz567890ab",
-  encryption_cmd = "rage -e -r %s",
+  encryption_cmd = "rage -e -a -r %s", -- Note: -a flag for ASCII armor
   decryption_cmd = "rage -d -i %s",
 })
 ```
@@ -238,6 +238,7 @@ $HOME/.local/share/nvim/databox.txt
 
 ### Deep Encryption with Per-String Security
 - **Individual encryption**: Each string is encrypted separately, preventing correlation attacks
+- **ASCII armor encoding**: Uses age's `-a` flag to produce UTF-8 safe encrypted output for JSON storage
 - **Secure containers**: Dictionary keys, string values, and nested strings all get individual encryption
 - **Data integrity**: Non-string types (numbers, booleans) are preserved as-is
 - **Complete preservation**: Empty tables `{}` and `nil` values are maintained exactly
@@ -320,7 +321,8 @@ end
 - Verify your encryption utility (age/rage) is installed and in your PATH
 - Check that your key files exist and are readable
 - Ensure your public key matches your private key
-- Test your encryption utility manually: `echo "test" | age -e -r <your_public_key>`
+- Test your encryption utility manually: `echo "test" | age -e -a -r <your_public_key>` (note the `-a` flag)
+- If using custom commands, ensure they produce ASCII-safe output for JSON compatibility
 
 **"Failed to create secure temporary file"**
 - Verify `mktemp` command is available
@@ -353,11 +355,11 @@ end
 Test your encryption utility choice:
 
 ```bash
-# Test age performance
-time echo "test data" | age -e -r <your_public_key> | age -d -i <your_private_key>
+# Test age performance with ASCII armor
+time echo "test data" | age -e -a -r <your_public_key> | age -d -i <your_private_key>
 
-# Test rage performance  
-time echo "test data" | rage -e -r <your_public_key> | rage -d -i <your_private_key>
+# Test rage performance with ASCII armor
+time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_private_key>
 ```
 
 ---
@@ -374,6 +376,16 @@ time echo "test data" | rage -e -r <your_public_key> | rage -d -i <your_private_
 - **For maximum compatibility**: Use `age` (default)
 - **For best performance**: Use `rage` with custom commands
 - **For specialized needs**: Implement age-compatible custom encryption
+
+---
+
+## 📋 Changelog
+
+### v1.1.0 - UTF-8 Safety Update
+- **BREAKING**: Default encryption now uses ASCII armor (`-a` flag) for UTF-8 safe JSON storage
+- **Fixed**: "String contains byte that does not start any UTF-8 character" errors
+- **Improved**: Better compatibility with complex data structures containing varied content
+- **Migration**: Existing data will need to be re-encrypted with the new format
 
 ---
 

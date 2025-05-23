@@ -24,7 +24,7 @@ local default_config = {
 	private_key = "",
 	public_key = "",
 	store_path = nil,
-	encryption_cmd = "age -e -r %s",
+	encryption_cmd = "age -e -a -r %s", -- Use ASCII armor (-a) for safe JSON storage
 	decryption_cmd = "age -d -i %s",
 }
 
@@ -224,8 +224,8 @@ local function deep_encrypt(obj)
 			return nil, err or "Encryption failed"
 		end
 
-		-- Replace newlines with escaped version for JSON storage
-		return encrypted:gsub("\n", "\\n")
+		-- Store encrypted content directly (ASCII armor is already safe for JSON)
+		return encrypted
 	else
 		return encoded
 	end
@@ -260,10 +260,9 @@ local function deep_decrypt(obj)
 			return nil, "Plugin not initialized"
 		end
 
-		-- Restore newlines from escaped version
-		local encrypted_content = obj:gsub("\\n", "\n")
+		-- ASCII armor format is safe to use directly
 		local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
-		local decrypted, err = run_command(cmd, encrypted_content)
+		local decrypted, err = run_command(cmd, obj)
 
 		if not decrypted then
 			return nil, err or "Decryption failed"
