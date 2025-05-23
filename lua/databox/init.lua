@@ -260,16 +260,22 @@ local function deep_decrypt(obj)
 			return nil, "Plugin not initialized"
 		end
 
-		-- ASCII armor format is safe to use directly
-		local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
-		local decrypted, err = run_command(cmd, obj)
+		-- Check if this string is an encrypted ASCII armor block
+		if obj:match("^%-%-%-%-%-BEGIN AGE ENCRYPTED FILE%-%-%-%-%-") then
+			-- ASCII armor format - decrypt it
+			local cmd = string.format(config.decryption_cmd, shell_escape(config.private_key))
+			local decrypted, err = run_command(cmd, obj)
 
-		if not decrypted then
-			return nil, err or "Decryption failed"
+			if not decrypted then
+				return nil, err or "Decryption failed"
+			end
+
+			-- Remove trailing newline that age might add
+			return decrypted:gsub("\n$", "")
+		else
+			-- Regular string - return as-is
+			return obj
 		end
-
-		-- Remove trailing newline that age might add
-		return decrypted:gsub("\n$", "")
 	else
 		return obj
 	end
