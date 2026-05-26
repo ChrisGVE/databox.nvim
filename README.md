@@ -430,4 +430,4 @@ time echo "test data" | rage -e -a -r <your_public_key> | rage -d -i <your_priva
 
 ## 📝 License
 
-MIT — © 2025 [@chrisgve](https://github.com/chrisgve)
+Apache License 2.0 — © 2025 [@chrisgve](https://github.com/chrisgve)
